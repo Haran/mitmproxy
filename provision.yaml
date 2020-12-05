@@ -1,0 +1,62 @@
+---
+- hosts: all
+  gather_facts: false
+
+  vars:
+    tmp_path: /tmp/mitm
+
+  tasks:
+    # Install necessary software
+    - yum:
+        name: ['python3-pip', 'mc']
+
+    # Create folder and download sources
+    - file:
+        path: "{{ tmp_path }}"
+        state: directory
+    - unarchive:
+        src: "{{ mitm_src_url }}"
+        dest: "{{ tmp_path }}"
+        remote_src: yes
+
+    # Verify and set variable
+    - shell: ls
+      register: folder
+      args:
+        chdir: "{{ tmp_path }}"
+    - assert:
+        that: mitm_version in folder.stdout
+    - set_fact:
+        mitm_path: "{{ tmp_path }}/{{ folder.stdout }}"
+
+    # Prepare virtual environment
+    - command: "{{ mitm_path }}/dev.sh"
+      args:
+        chdir: "{{ mitm_path }}"
+
+    # Bruteforce configuration
+    - replace:
+        path: "{{ mitm_path }}/release/cibuild.py"
+        regexp: 'travis_tag=os.environ.get\("TRAVIS_TAG", ""\)'
+        replace: 'travis_tag=os.environ.get("TRAVIS_TAG", "v{{ mitm_version }}")'
+    - replace:
+        path: "{{ mitm_path }}/release/cibuild.py"
+        regexp: 'travis_branch=os.environ.get\("TRAVIS_BRANCH", ""\)'
+        replace: 'travis_branch=os.environ.get("TRAVIS_BRANCH", "v{{ mitm_version }}")'
+    - replace:
+        path: "{{ mitm_path }}/release/cibuild.py"
+        regexp: 'should_build_pyinstaller=bool_from_env\("CI_BUILD_PYINSTALLER"\)'
+        replace: 'should_build_pyinstaller=True'
+
+    # Compile and copy binaries
+    - shell: . venv/bin/activate && tox -e cibuild -- build && deactivate
+      args:
+        chdir: "{{ mitm_path }}"
+    - fetch:
+        src: "{{ mitm_path }}/release/build/binaries/linux/{{ item }}"
+        dest: /tmp/
+        flat: yes
+      with_items:
+        - mitmproxy
+        - mitmweb
+        - mitmdump
